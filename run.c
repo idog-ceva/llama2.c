@@ -1,5 +1,5 @@
 /* Inference for Llama-2 Transformer model in pure C */
-
+#define MMAP 1
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
@@ -155,8 +155,18 @@ void read_checkpoint(char* checkpoint, Config* config, TransformerWeights* weigh
     // memory map the Transformer weights into the data pointer
     *fd = open(checkpoint, O_RDONLY); // open in read only mode
     if (*fd == -1) { fprintf(stderr, "open failed!\n"); exit(EXIT_FAILURE); }
+#if MMAP
     *data = mmap(NULL, *file_size, PROT_READ, MAP_PRIVATE, *fd, 0);
     if (*data == MAP_FAILED) { fprintf(stderr, "mmap failed!\n"); exit(EXIT_FAILURE); }
+#else
+	// Allocate memory to hold the file contents
+	*data = malloc(*file_size);
+	if (!*data) { fprintf(stderr, "Memory allocation failed!\n"); exit(EXIT_FAILURE); }
+
+	// Read the file contents into the allocated memory
+	size_t read_size = fread(*data, 1, *file_size, file);
+	if (read_size != *file_size) { fprintf(stderr, "File read failed!\n"); exit(EXIT_FAILURE); }
+#endif
     float* weights_ptr = *data + sizeof(Config)/sizeof(float);
     memory_map_weights(weights, config, weights_ptr, shared_weights);
 }
@@ -170,7 +180,11 @@ void build_transformer(Transformer *t, char* checkpoint_path) {
 
 void free_transformer(Transformer* t) {
     // close the memory mapping
+#if MMAP
     if (t->data != MAP_FAILED) { munmap(t->data, t->file_size); }
+#else
+if (t->data != MAP_FAILED) { free(t->data); }
+#endif
     if (t->fd != -1) { close(t->fd); }
     // free the RunState buffers
     free_run_state(&t->state);

@@ -1,5 +1,10 @@
 /* Inference for Llama-2 Transformer model in pure C, int8 quantized forward pass. */
-
+#ifdef CEVA_NPN
+#include <ceva-time.h>
+#define MMAP 0
+#else
+#define MMAP 1
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
@@ -8,12 +13,16 @@
 #include <math.h>
 #include <string.h>
 #include <fcntl.h>
+
 #if defined _WIN32
     #include "win.h"
 #else
-    #include <unistd.h>
-    #include <sys/mman.h>
+	#ifndef CEVA_NPN
+		#include <unistd.h>
+		#include <sys/mman.h>
+	#endif
 #endif
+
 // ----------------------------------------------------------------------------
 // Globals
 int GS = 0; // group size global for quantization of the weights
@@ -242,10 +251,20 @@ void read_checkpoint(char* checkpoint, Config* config, TransformerWeights* weigh
     *file_size = ftell(file); // get the file size, in bytes
     fclose(file);
     // memory map the Transformer weights into the data pointer
-    *fd = open(checkpoint, O_RDONLY); // open in read only mode
+    *fd = fopen(checkpoint, "rb"); // open in read only mode
     if (*fd == -1) { fprintf(stderr, "open failed!\n"); exit(EXIT_FAILURE); }
+#if MMAP	
     *data = mmap(NULL, *file_size, PROT_READ, MAP_PRIVATE, *fd, 0);
     if (*data == MAP_FAILED) { fprintf(stderr, "mmap failed!\n"); exit(EXIT_FAILURE); }
+#else
+	// Allocate memory to hold the file contents
+	*data = malloc(*file_size);
+	if (!*data) { fprintf(stderr, "Memory allocation failed!\n"); exit(EXIT_FAILURE); }
+
+	// Read the file contents into the allocated memory
+	size_t read_size = fread(*data, 1, *file_size, file);
+	if (read_size != *file_size) { fprintf(stderr, "File read failed!\n"); exit(EXIT_FAILURE); }
+#endif	
     void* weights_ptr = ((char*)*data) + header_size; // skip header bytes. char is 1 byte
     memory_map_weights(weights, config, weights_ptr, shared_classifier);
 }
@@ -270,8 +289,12 @@ void free_transformer(Transformer* t) {
     free(t->weights.w3);
     if(t->weights.wcls != t->weights.q_tokens) { free(t->weights.wcls); }
     // close the memory mapping
+#if MMAP
     if (t->data != MAP_FAILED) { munmap(t->data, t->file_size); }
-    if (t->fd != -1) { close(t->fd); }
+#else
+	if (t->data != NULL) { free(t->data); }
+#endif
+    if (t->fd != -1) { fclose(t->fd); }
     // free the RunState buffers
     free_run_state(&t->state);
 }
@@ -1022,18 +1045,35 @@ void error_usage() {
     exit(EXIT_FAILURE);
 }
 
-int main(int argc, char *argv[]) {
+int main(int xargc, char *xargv[]) {
 
+	//stdout stream should have no buffer, for quick prints
+	setvbuf(stdout,0,_IONBF, 0);
     // default parameters
     char *checkpoint_path = NULL;  // e.g. out/model.bin
+#ifdef CEVA_NPN
+    char *tokenizer_path = "..\\..\\tok512.bin";
+#else
     char *tokenizer_path = "tokenizer.bin";
+#endif
     float temperature = 1.0f;   // 0.0 = greedy deterministic. 1.0 = original. don't set higher
     float topp = 0.9f;          // top-p in nucleus sampling. 1.0 = off. 0.9 works well, but slower
-    int steps = 256;            // number of steps to run for
+    int steps = 100;            // number of steps to run for
     char *prompt = NULL;        // prompt string
     unsigned long long rng_seed = 0; // seed rng with time by default
     char *mode = "generate";    // generate|chat
     char *system_prompt = NULL; // the (optional) system prompt to use in chat mode
+
+#ifdef CEVA_NPN
+    clock_t timer_val;
+#endif
+    char* argv[4]={
+    		"xx",
+    		"c:\\_idog\\sabu_llama2.c\\stories260K.q.bin",
+			"-i",
+			"hello world"
+    };
+    int argc=4;
 
     // poor man's C argparse so we can override the defaults above from the command line
     if (argc >= 2) { checkpoint_path = argv[1]; } else { error_usage(); }
@@ -1062,20 +1102,37 @@ int main(int argc, char *argv[]) {
 
     // build the Transformer via the model .bin file
     Transformer transformer;
+    printf("\nstart - build_transformer\n");
     build_transformer(&transformer, checkpoint_path);
+    printf("\nend - build_transformer\n");
     if (steps == 0 || steps > transformer.config.seq_len) steps = transformer.config.seq_len; // override to ~max length
 
     // build the Tokenizer via the tokenizer .bin file
     Tokenizer tokenizer;
+    printf("\nstart - build_tokenizer\n");
     build_tokenizer(&tokenizer, tokenizer_path, transformer.config.vocab_size);
-
+    printf("\nend - build_tokenizer\n");
     // build the Sampler
     Sampler sampler;
+    printf("\nstart - build_sampler\n");
     build_sampler(&sampler, transformer.config.vocab_size, temperature, topp, rng_seed);
+    printf("\nend - build_sampler\n");
 
     // run!
-    if (strcmp(mode, "generate") == 0) {
+    if (strcmp(mode, "generate") == 0)
+    {
+    	printf("\nstart - generate\n");
+#ifdef CEVA_NPN
+    	start_clock();
+    	reset_clock();
+    	timer_val = clock();
+#endif
         generate(&transformer, &tokenizer, &sampler, prompt, steps);
+#ifdef CEVA_NPN
+        timer_val = clock()-timer_val;
+        printf("\noutput generated in %ld cycles\n",timer_val);
+#endif
+        printf("\nend - generate\n");
     } else if (strcmp(mode, "chat") == 0) {
         chat(&transformer, &tokenizer, &sampler, prompt, system_prompt, steps);
     } else {
