@@ -3,7 +3,7 @@
 #include <ceva-time.h>
 #define MMAP 0
 #else
-#define MMAP 1
+#define MMAP 0
 #endif
 #include <stdio.h>
 #include <stdlib.h>
@@ -1052,9 +1052,9 @@ int main(int xargc, char *xargv[]) {
     // default parameters
     char *checkpoint_path = NULL;  // e.g. out/model.bin
 #ifdef CEVA_NPN
-    char *tokenizer_path = "..\\..\\tok512.bin";
+    char *tokenizer_path = "..\\..\\tokenizer.bin";
 #else
-    char *tokenizer_path = "tokenizer.bin";
+    char *tokenizer_path = "..\\..\\tokenizer.bin";
 #endif
     float temperature = 1.0f;   // 0.0 = greedy deterministic. 1.0 = original. don't set higher
     float topp = 0.9f;          // top-p in nucleus sampling. 1.0 = off. 0.9 works well, but slower
@@ -1069,7 +1069,7 @@ int main(int xargc, char *xargv[]) {
 #endif
     char* argv[4]={
     		"xx",
-    		"c:\\_idog\\sabu_llama2.c\\stories260K.q.bin",
+    		"..\\..\\stories15M.q.bin",
 			"-i",
 			"hello world"
     };
